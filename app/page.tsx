@@ -1,64 +1,46 @@
-"use client";
+import React, { useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
+import { AlertTriangle, Baby, Cloud, LogIn, LogOut } from "lucide-react";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  Baby,
-  CalendarDays,
-  ClipboardPlus,
-  Clock3,
-  FileText,
-  HeartPulse,
-  Trash2,
-} from "lucide-react";
+// =============================
+// LITTLE KICKS TRACKER
+// Login Google + Cloud Sync Ready
+// =============================
+//
+// Cara aktivasi cloud sync:
+// 1. Buat project Firebase
+// 2. Aktifkan Authentication > Google
+// 3. Aktifkan Firestore Database
+// 4. Isi firebaseConfig di bawah
+//
+// Kalau firebaseConfig belum diisi, app tetap jalan dengan localStorage.
 
-type TrackerData = {
-  kicksByDate: Record<string, number[]>;
-  notesByDate: Record<string, string>;
+const STORAGE_KEY = "little-kicks-tracker-local-v1";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDcNgHY5TTlAC9ctkT6jjwGR8Yne25nJnA",
+  authDomain: "little-kicks-tracker-e6eb1.firebaseapp.com",
+  projectId: "little-kicks-tracker-e6eb1",
+  storageBucket: "little-kicks-tracker-e6eb1.appspot.com",
+  messagingSenderId: "84421098243",
+  appId: "1:84421098243:web:494e4d7303b273ff3b0736",
 };
 
-type TabKey = "monitor" | "history" | "notes";
-
-const STORAGE_KEY = "little-kicks-tracker-v1";
-const HOURS = Array.from({ length: 24 }, (_, i) => i);
-
-const defaultData: TrackerData = {
-  kicksByDate: {},
-  notesByDate: {},
-};
+function hasFirebaseConfig() {
+  return Object.values(firebaseConfig).every(Boolean);
+}
 
 function todayKey() {
   const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return now.toISOString().slice(0, 10);
 }
 
-function loadData(): TrackerData {
-  if (typeof window === "undefined") return defaultData;
-
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return defaultData;
-    const parsed = JSON.parse(raw) as Partial<TrackerData>;
-
-    return {
-      kicksByDate: parsed.kicksByDate ?? {},
-      notesByDate: parsed.notesByDate ?? {},
-    };
-  } catch {
-    return defaultData;
-  }
-}
-
-function saveData(data: TrackerData) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-}
-
-function formatDate(dateStr: string) {
-  const d = new Date(`${dateStr}T00:00:00`);
-  return d.toLocaleDateString("id-ID", {
+function formatDate(dateStr) {
+  return new Date(dateStr).toLocaleDateString([], {
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -66,533 +48,409 @@ function formatDate(dateStr: string) {
   });
 }
 
-function formatTime(ts: number) {
-  return new Date(ts).toLocaleTimeString("id-ID", {
-    hour: "2-digit",
-    minute: "2-digit",
+function formatDateShort(dateStr) {
+  return new Date(dateStr).toLocaleDateString([], {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
   });
 }
 
-function formatHour(hour: number) {
-  return `${String(hour).padStart(2, "0")}:00`;
+function formatMinutes(ms) {
+  if (ms == null) return "-";
+  const totalMinutes = Math.round(ms / 60000);
+  return `${totalMinutes} menit`;
 }
 
-function getHourlyCounts(kicks: number[] = []) {
-  const counts = Object.fromEntries(HOURS.map((hour) => [hour, 0])) as Record<number, number>;
-  for (const ts of kicks) {
-    const hour = new Date(ts).getHours();
-    counts[hour] += 1;
+function getAverageTimeToTen(kicks) {
+  if (!kicks || kicks.length < 10) return null;
+  const sorted = [...kicks].sort((a, b) => a - b);
+  const durations = [];
+
+  for (let i = 0; i <= sorted.length - 10; i++) {
+    durations.push(sorted[i + 9] - sorted[i]);
   }
-  return counts;
+
+  return durations.reduce((sum, val) => sum + val, 0) / durations.length;
 }
 
-function getPeakHours(hourlyCounts: Record<number, number>) {
-  const entries = Object.entries(hourlyCounts);
-  const max = Math.max(0, ...entries.map(([, value]) => Number(value)));
-  if (max === 0) return [] as number[];
-  return entries
-    .filter(([, value]) => Number(value) === max)
-    .map(([hour]) => Number(hour));
+function getMostActiveWindow(kicks) {
+  if (!kicks || kicks.length === 0) return "-";
+
+  const buckets = new Array(24).fill(0);
+
+  kicks.forEach((ts) => {
+    buckets[new Date(ts).getHours()] += 1;
+  });
+
+  const maxCount = Math.max(...buckets);
+  const hour = buckets.findIndex((count) => count === maxCount);
+  if (hour < 0) return "-";
+
+  const start = `${String(hour).padStart(2, "0")}:00`;
+  const end = `${String((hour + 1) % 24).padStart(2, "0")}:00`;
+  return `${start} – ${end}`;
 }
 
-function getActivityLabel(total: number) {
+function getCategory(total) {
   if (total === 0) return "Belum tercatat";
   if (total <= 10) return "Ringan";
   if (total <= 30) return "Sedang";
   return "Aktif";
 }
 
-function getHeatColor(value: number, max: number) {
-  if (value === 0 || max === 0) return "bg-stone-100 text-stone-400 border-stone-200";
-  const ratio = value / max;
-  if (ratio < 0.34) return "bg-[#E5EBDC] text-[#60725C] border-[#C9D4BE]";
-  if (ratio < 0.67) return "bg-[#C7D3BA] text-[#4C5A49] border-[#A7B39A]";
-  return "bg-[#60725C] text-white border-[#60725C]";
+function loadLocalData() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return { kicksByDate: {}, notesByDate: {} };
+    return JSON.parse(raw);
+  } catch {
+    return { kicksByDate: {}, notesByDate: {} };
+  }
 }
 
-function cardBase(extra = "") {
-  return `rounded-[28px] border border-[#E9E0D2] bg-cream shadow-soft ${extra}`;
+function saveLocalData(data) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
 }
 
-export default function HomePage() {
-  const [data, setData] = useState<TrackerData>(defaultData);
-  const [selectedDate, setSelectedDate] = useState(todayKey());
+export default function App() {
+  const [firebaseReady, setFirebaseReady] = useState(false);
+  const [firebaseServices, setFirebaseServices] = useState(null);
+  const [authUser, setAuthUser] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  const [date, setDate] = useState(todayKey());
+  const [localData, setLocalData] = useState({ kicksByDate: {}, notesByDate: {} });
+  const [cloudData, setCloudData] = useState({ kicksByDate: {}, notesByDate: {} });
   const [note, setNote] = useState("");
-  const [activeTab, setActiveTab] = useState<TabKey>("monitor");
 
   useEffect(() => {
-    const initial = loadData();
-    setData(initial);
-    setNote(initial.notesByDate[todayKey()] ?? "");
+    setLocalData(loadLocalData());
   }, []);
 
   useEffect(() => {
-    setNote(data.notesByDate[selectedDate] ?? "");
-  }, [selectedDate, data.notesByDate]);
+    async function setupFirebase() {
+      if (!hasFirebaseConfig()) {
+        setFirebaseReady(false);
+        setAuthLoading(false);
+        return;
+      }
 
-  const kicksForDate = data.kicksByDate[selectedDate] ?? [];
-  const hourlyForDate = useMemo(() => getHourlyCounts(kicksForDate), [kicksForDate]);
-  const peakHours = useMemo(() => getPeakHours(hourlyForDate), [hourlyForDate]);
-  const maxHourCount = Math.max(0, ...Object.values(hourlyForDate));
+      try {
+        const [{ initializeApp }, authModule, firestoreModule] = await Promise.all([
+          import("firebase/app"),
+          import("firebase/auth"),
+          import("firebase/firestore"),
+        ]);
 
-  const summary = useMemo(() => {
-    const total = kicksForDate.length;
-    return {
-      total,
-      firstKick: kicksForDate[0],
-      lastKick: kicksForDate[kicksForDate.length - 1],
-      activityLabel: getActivityLabel(total),
-    };
-  }, [kicksForDate]);
+        const app = initializeApp(firebaseConfig);
+        const auth = authModule.getAuth(app);
+        const db = firestoreModule.getFirestore(app);
+        const googleProvider = new authModule.GoogleAuthProvider();
 
-  const orderedDates = useMemo(
-    () => Object.keys(data.kicksByDate).sort((a, b) => (a < b ? 1 : -1)),
-    [data.kicksByDate]
-  );
+        setFirebaseServices({
+          auth,
+          db,
+          googleProvider,
+          authModule,
+          firestoreModule,
+        });
+        setFirebaseReady(true);
 
-  const historyRows = useMemo(
-    () =>
-      orderedDates.map((date) => {
-        const kicks = data.kicksByDate[date] ?? [];
-        const hourly = getHourlyCounts(kicks);
-        return {
-          date,
-          kicks,
-          hourly,
-          peakHours: getPeakHours(hourly),
-          total: kicks.length,
-          note: data.notesByDate[date] ?? "",
-        };
-      }),
-    [orderedDates, data.kicksByDate, data.notesByDate]
-  );
+        const unsubscribe = authModule.onAuthStateChanged(auth, async (user) => {
+          setAuthUser(user || null);
+          setAuthLoading(false);
 
-  function updateData(updater: (prev: TrackerData) => TrackerData) {
-    setData((prev) => {
+          if (!user) {
+            setCloudData({ kicksByDate: {}, notesByDate: {} });
+            return;
+          }
+
+          const ref = firestoreModule.doc(db, "users", user.uid, "tracker", "little-kicks");
+          const snap = await firestoreModule.getDoc(ref);
+
+          if (snap.exists()) {
+            setCloudData(snap.data());
+          } else {
+            const initial = { kicksByDate: {}, notesByDate: {} };
+            await firestoreModule.setDoc(ref, initial);
+            setCloudData(initial);
+          }
+        });
+
+        return () => unsubscribe?.();
+      } catch (error) {
+        console.error("Firebase setup failed:", error);
+        setFirebaseReady(false);
+        setAuthLoading(false);
+      }
+    }
+
+    setupFirebase();
+  }, []);
+
+  const activeData = useMemo(() => {
+    return authUser ? cloudData : localData;
+  }, [authUser, cloudData, localData]);
+
+  useEffect(() => {
+    setNote(activeData.notesByDate?.[date] || "");
+  }, [date, activeData]);
+
+  const kicksToday = activeData.kicksByDate?.[date] || [];
+  const totalToday = kicksToday.length;
+  const avgTimeToTen = getAverageTimeToTen(kicksToday);
+  const mostActiveWindow = getMostActiveWindow(kicksToday);
+  const sortedDates = Object.keys(activeData.kicksByDate || {}).sort((a, b) => (a < b ? 1 : -1));
+
+  function updateLocal(updater) {
+    setLocalData((prev) => {
       const next = updater(prev);
-      saveData(next);
+      saveLocalData(next);
       return next;
     });
   }
 
+  async function updateCloud(updater) {
+    if (!authUser || !firebaseServices) return;
+
+    const next = updater(cloudData);
+    setCloudData(next);
+
+    const { firestoreModule, db } = firebaseServices;
+    const ref = firestoreModule.doc(db, "users", authUser.uid, "tracker", "little-kicks");
+    await firestoreModule.setDoc(ref, next, { merge: true });
+  }
+
   function addKick() {
-    const timestamp = Date.now();
-    updateData((prev) => ({
+    const now = Date.now();
+
+    if (authUser) {
+      updateCloud((prev) => ({
+        ...prev,
+        kicksByDate: {
+          ...prev.kicksByDate,
+          [date]: [...(prev.kicksByDate?.[date] || []), now].sort((a, b) => a - b),
+        },
+      }));
+      return;
+    }
+
+    updateLocal((prev) => ({
       ...prev,
       kicksByDate: {
         ...prev.kicksByDate,
-        [selectedDate]: [...(prev.kicksByDate[selectedDate] ?? []), timestamp].sort((a, b) => a - b),
+        [date]: [...(prev.kicksByDate?.[date] || []), now].sort((a, b) => a - b),
       },
     }));
   }
 
-  function removeKick(timestamp: number) {
-    updateData((prev) => ({
-      ...prev,
-      kicksByDate: {
-        ...prev.kicksByDate,
-        [selectedDate]: (prev.kicksByDate[selectedDate] ?? []).filter((item) => item !== timestamp),
-      },
-    }));
-  }
+  function saveNote() {
+    if (authUser) {
+      updateCloud((prev) => ({
+        ...prev,
+        notesByDate: {
+          ...prev.notesByDate,
+          [date]: note,
+        },
+      }));
+      return;
+    }
 
-  function saveNoteForDate() {
-    updateData((prev) => ({
+    updateLocal((prev) => ({
       ...prev,
       notesByDate: {
         ...prev.notesByDate,
-        [selectedDate]: note,
+        [date]: note,
       },
     }));
   }
 
-  function resetSelectedDate() {
-    updateData((prev) => ({
-      ...prev,
-      kicksByDate: {
-        ...prev.kicksByDate,
-        [selectedDate]: [],
-      },
-      notesByDate: {
-        ...prev.notesByDate,
-        [selectedDate]: "",
-      },
-    }));
-    setNote("");
+  async function signInWithGoogle() {
+    if (!firebaseReady || !firebaseServices) return;
+    const { auth, googleProvider, authModule } = firebaseServices;
+    await authModule.signInWithPopup(auth, googleProvider);
+  }
+
+  async function signOutFromGoogle() {
+    if (!firebaseServices) return;
+    await firebaseServices.authModule.signOut(firebaseServices.auth);
   }
 
   return (
-    <main className="min-h-screen bg-[#F7F2E9] px-4 py-6 md:px-8 md:py-8">
-      <div className="mx-auto max-w-7xl space-y-6">
-        <section className="grid gap-4 xl:grid-cols-[1.3fr_0.7fr]">
-          <div className={cardBase()}>
-            <div className="p-5 md:p-7">
-              <div className="flex flex-col gap-5 md:flex-row md:items-start md:justify-between">
-                <div className="flex items-start gap-4">
-                  <div className="rounded-3xl bg-sand p-4 text-bark">
-                    <Baby className="h-7 w-7" />
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium uppercase tracking-[0.2em] text-moss/80">
-                      by Haryo &amp; Vika
-                    </p>
-                    <h1 className="mt-2 text-3xl font-semibold tracking-tight text-bark md:text-4xl">
-                      Little Kicks Tracker
-                    </h1>
-                    <p className="mt-3 max-w-2xl text-sm leading-6 text-bark/80 md:text-base">
-                      Tinggal tekan saat bayi bergerak. Aplikasi akan merangkum total gerakan harian,
-                      jam paling aktif, history antar tanggal, dan catatan keluhan untuk kontrol ke obgyn.
-                    </p>
-                  </div>
+    <div className="min-h-screen bg-stone-50 p-6 text-stone-800">
+      <div className="mx-auto max-w-3xl space-y-4">
+        <Card className="rounded-3xl border-stone-200 shadow-sm">
+          <CardHeader className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="mb-2 text-sm font-semibold uppercase tracking-[0.35em] text-emerald-800">
+                  By Haryo & Vika
                 </div>
-                <div className="rounded-2xl border border-[#E6DBC9] bg-white/50 px-4 py-3 text-sm text-bark/80">
-                  Simple, calming, earth tone
-                </div>
+                <CardTitle className="text-4xl font-bold text-stone-800">
+                  Little Kicks Tracker
+                </CardTitle>
+                <CardDescription className="mt-3 text-base leading-8 text-stone-600">
+                  Ketika bayi bergerak, klik tombol "Bayi Bergerak". Aplikasi ini akan merangkum
+                  rata-rata waktu yang dibutuhkan untuk mencapai 10 gerakan, total gerakan harian,
+                  menunjukkan jendela waktu dimana bayi paling aktif, history antar tanggal, dan
+                  catatan keluhan sehingga dapat digunakan untuk konsultasi dengan tenaga kesehatan.
+                </CardDescription>
               </div>
 
-              <div className="mt-6 grid gap-3 md:grid-cols-[1fr_auto]">
-                <label className="flex flex-col gap-2 text-sm font-medium text-bark">
-                  Tanggal pencatatan
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="h-12 rounded-2xl border border-[#E2D7C8] bg-white px-4 text-bark outline-none ring-0 transition focus:border-moss"
-                  />
-                </label>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    onClick={addKick}
-                    className="h-14 w-full rounded-2xl bg-moss px-6 text-base font-semibold text-white transition hover:brightness-95 md:w-auto"
+              <div className="flex flex-col gap-2">
+                {authLoading ? (
+                  <Badge variant="secondary" className="rounded-xl px-3 py-2">
+                    Memuat...
+                  </Badge>
+                ) : authUser ? (
+                  <>
+                    <Badge className="rounded-xl bg-emerald-800 px-3 py-2 text-white">
+                      <Cloud className="mr-2 h-4 w-4" />
+                      Cloud Sync Aktif
+                    </Badge>
+                    <Button
+                      variant="outline"
+                      className="rounded-2xl"
+                      onClick={signOutFromGoogle}
+                    >
+                      <LogOut className="mr-2 h-4 w-4" />
+                      Keluar
+                    </Button>
+                  </>
+                ) : firebaseReady ? (
+                  <Button
+                    className="rounded-2xl bg-emerald-800 text-white hover:bg-emerald-900"
+                    onClick={signInWithGoogle}
                   >
-                    Bayi Bergerak
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-6 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <SummaryCard label="Tanggal" value={formatDate(selectedDate)} compact />
-                <SummaryCard label="Total gerakan" value={String(summary.total)} />
-                <SummaryCard
-                  label="Jam paling aktif"
-                  value={peakHours.length ? peakHours.map(formatHour).join(", ") : "-"}
-                />
-                <SummaryCard label="Kategori" value={summary.activityLabel} />
-              </div>
-            </div>
-          </div>
-
-          <div className={cardBase()}>
-            <div className="p-5 md:p-6">
-              <div className="flex items-center gap-3 text-bark">
-                <HeartPulse className="h-5 w-5 text-moss" />
-                <h2 className="text-lg font-semibold">Catatan penting</h2>
-              </div>
-              <div className="mt-4 space-y-3 text-sm leading-6 text-bark/80">
-                <p>Aplikasi ini membantu pencatatan pribadi, bukan alat diagnosis medis.</p>
-                <p>
-                  Kalau gerakan bayi terasa jauh berkurang dari pola biasanya, atau kamu khawatir,
-                  segera hubungi dokter atau fasilitas kesehatan.
-                </p>
-                <p>
-                  Jumlah gerakan bisa berbeda tiap jam dan tiap hari. Yang lebih penting adalah pola
-                  biasanya dan perubahan yang terasa bermakna.
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section className={cardBase()}>
-          <div className="border-b border-[#E8DDCE] px-4 pt-4 md:px-6">
-            <div className="flex flex-wrap gap-2">
-              <TabButton
-                active={activeTab === "monitor"}
-                onClick={() => setActiveTab("monitor")}
-                icon={<ClipboardPlus className="h-4 w-4" />}
-                label="Monitor"
-              />
-              <TabButton
-                active={activeTab === "history"}
-                onClick={() => setActiveTab("history")}
-                icon={<CalendarDays className="h-4 w-4" />}
-                label="History"
-              />
-              <TabButton
-                active={activeTab === "notes"}
-                onClick={() => setActiveTab("notes")}
-                icon={<FileText className="h-4 w-4" />}
-                label="Catatan Keluhan"
-              />
-            </div>
-          </div>
-
-          <div className="p-4 md:p-6">
-            {activeTab === "monitor" && (
-              <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
-                <div className={cardBase("bg-white")}>
-                  <div className="p-5 md:p-6">
-                    <h3 className="text-xl font-semibold text-bark">Grafik pola gerakan hari ini</h3>
-                    <p className="mt-2 text-sm text-bark/70">
-                      Semakin tinggi batangnya, semakin sering gerakan tercatat pada jam itu.
-                    </p>
-
-                    {summary.total === 0 ? (
-                      <EmptyState text="Belum ada gerakan yang tercatat untuk tanggal ini." />
-                    ) : (
-                      <>
-                        <div className="mt-6 grid h-[270px] grid-cols-12 items-end gap-2 md:grid-cols-24">
-                          {HOURS.map((hour) => {
-                            const count = hourlyForDate[hour];
-                            const height = maxHourCount > 0 ? Math.max(14, (count / maxHourCount) * 220) : 14;
-                            return (
-                              <div key={hour} className="flex flex-col items-center gap-2">
-                                <span className="text-[10px] text-bark/55">{count}</span>
-                                <div
-                                  className={`w-full rounded-t-xl ${count > 0 ? "bg-moss" : "bg-[#E8DFD2]"}`}
-                                  style={{ height }}
-                                  title={`${formatHour(hour)} • ${count} gerakan`}
-                                />
-                                <span className="text-[10px] text-bark/55">{String(hour).padStart(2, "0")}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        <div className="mt-6 grid gap-3 md:grid-cols-3">
-                          <MiniInfo label="Gerakan pertama" value={summary.firstKick ? formatTime(summary.firstKick) : "-"} />
-                          <MiniInfo label="Gerakan terakhir" value={summary.lastKick ? formatTime(summary.lastKick) : "-"} />
-                          <MiniInfo
-                            label="Jam paling aktif"
-                            value={peakHours.length ? peakHours.map(formatHour).join(", ") : "-"}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                </div>
-
-                <div className={cardBase("bg-white")}>
-                  <div className="p-5 md:p-6">
-                    <h3 className="text-xl font-semibold text-bark">Riwayat klik hari ini</h3>
-                    <p className="mt-2 text-sm text-bark/70">
-                      Kamu bisa hapus satu klik kalau tadi kepencet tidak sengaja.
-                    </p>
-
-                    <div className="mt-5 space-y-3">
-                      {kicksForDate.length === 0 ? (
-                        <EmptyState text="Belum ada riwayat gerakan pada tanggal ini." />
-                      ) : (
-                        kicksForDate
-                          .slice()
-                          .sort((a, b) => b - a)
-                          .map((timestamp, index) => (
-                            <div
-                              key={`${timestamp}-${index}`}
-                              className="flex items-center justify-between rounded-2xl border border-[#E8DDCE] bg-[#FFFDFC] px-4 py-3"
-                            >
-                              <div>
-                                <div className="font-medium text-bark">Gerakan tercatat</div>
-                                <div className="text-sm text-bark/65">{formatTime(timestamp)}</div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => removeKick(timestamp)}
-                                className="rounded-xl border border-[#E6DAC7] p-2 text-bark/70 transition hover:bg-[#F4EEE4]"
-                                aria-label="Hapus satu gerakan"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          ))
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {activeTab === "history" && (
-              <div className="space-y-4">
-                {historyRows.length === 0 ? (
-                  <EmptyState text="Belum ada data history." />
+                    <LogIn className="mr-2 h-4 w-4" />
+                    Masuk dengan Google
+                  </Button>
                 ) : (
-                  historyRows.map((row) => {
-                    const maxHourly = Math.max(0, ...Object.values(row.hourly));
-                    return (
-                      <div key={row.date} className="rounded-[26px] border border-[#E8DDCE] bg-white p-4 md:p-5">
-                        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                          <div>
-                            <h3 className="text-lg font-semibold text-bark">{formatDate(row.date)}</h3>
-                            <p className="mt-1 text-sm text-bark/70">
-                              Total {row.total} gerakan • Jam paling aktif:{" "}
-                              {row.peakHours.length ? row.peakHours.map(formatHour).join(", ") : "-"}
-                            </p>
-                          </div>
-                          <div className="inline-flex w-fit rounded-full bg-[#F4EEE4] px-3 py-1 text-sm font-medium text-bark">
-                            {getActivityLabel(row.total)}
-                          </div>
-                        </div>
-
-                        <div className="mt-4 overflow-x-auto">
-                          <div className="min-w-[980px] space-y-2">
-                            <div className="grid grid-cols-[150px_repeat(24,minmax(0,1fr))] gap-2 text-xs text-bark/60">
-                              <div>Jam</div>
-                              {HOURS.map((hour) => (
-                                <div key={hour} className="text-center">
-                                  {String(hour).padStart(2, "0")}
-                                </div>
-                              ))}
-                            </div>
-                            <div className="grid grid-cols-[150px_repeat(24,minmax(0,1fr))] gap-2">
-                              <div className="flex items-center text-sm font-medium text-bark">Jumlah gerakan</div>
-                              {HOURS.map((hour) => (
-                                <div
-                                  key={hour}
-                                  className={`flex h-12 items-center justify-center rounded-xl border text-sm font-medium ${getHeatColor(
-                                    row.hourly[hour],
-                                    maxHourly
-                                  )}`}
-                                  title={`${formatHour(hour)} • ${row.hourly[hour]} gerakan`}
-                                >
-                                  {row.hourly[hour]}
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        </div>
-
-                        {row.note ? (
-                          <div className="mt-4 rounded-2xl bg-[#F7F2E9] px-4 py-3 text-sm text-bark/80">
-                            <span className="font-semibold text-bark">Keluhan / catatan:</span> {row.note}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })
+                  <Badge variant="secondary" className="rounded-xl px-3 py-2">
+                    Mode lokal
+                  </Badge>
                 )}
               </div>
-            )}
+            </div>
 
-            {activeTab === "notes" && (
-              <div className="grid gap-4 xl:grid-cols-[0.85fr_1.15fr]">
-                <div className={cardBase("bg-white")}>
-                  <div className="p-5 md:p-6">
-                    <h3 className="text-xl font-semibold text-bark">Ringkasan tanggal terpilih</h3>
-                    <div className="mt-5 space-y-3 rounded-3xl bg-[#F7F2E9] p-4 text-sm text-bark/80">
-                      <p>
-                        <span className="font-semibold text-bark">Tanggal:</span> {formatDate(selectedDate)}
-                      </p>
-                      <p>
-                        <span className="font-semibold text-bark">Total gerakan:</span> {summary.total}
-                      </p>
-                      <p>
-                        <span className="font-semibold text-bark">Jam paling aktif:</span>{" "}
-                        {peakHours.length ? peakHours.map(formatHour).join(", ") : "-"}
-                      </p>
-                    </div>
-                  </div>
+            {!firebaseReady ? (
+              <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900">
+                <div className="mb-1 flex items-center gap-2 font-medium">
+                  <AlertTriangle className="h-4 w-4" />
+                  Cloud sync belum aktif
                 </div>
+                Isi firebaseConfig terlebih dulu agar login Google dan sinkronisasi HP/laptop bisa
+                dipakai. Selama belum aktif, data tetap tersimpan di browser perangkat ini.
+              </div>
+            ) : null}
+          </CardHeader>
 
-                <div className={cardBase("bg-white")}>
-                  <div className="p-5 md:p-6">
-                    <h3 className="text-xl font-semibold text-bark">Catatan keluhan</h3>
-                    <p className="mt-2 text-sm text-bark/70">
-                      Tulis keluhan, perubahan pola gerakan, atau hal yang ingin disampaikan saat kontrol.
-                    </p>
+          <CardContent className="space-y-4">
+            <Input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="rounded-2xl border-stone-300"
+            />
 
-                    <textarea
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="Contoh: Bayi lebih aktif setelah makan malam. Hari ini gerakan terasa lebih halus. Ibu merasa perut bawah lebih nyeri dan kaki agak bengkak."
-                      className="mt-5 min-h-[220px] w-full rounded-3xl border border-[#E2D7C8] bg-[#FFFDFC] px-4 py-4 text-bark outline-none focus:border-moss"
-                    />
+            <MetricCard label="Tanggal" value={formatDate(date)} />
+            <MetricCard label="Total gerakan" value={String(totalToday)} emphasis />
+            <MetricCard
+              label="Rata-rata waktu mencapai 10 gerakan"
+              value={formatMinutes(avgTimeToTen)}
+              emphasis
+            />
+            <MetricCard label="Jendela waktu paling aktif" value={mostActiveWindow} emphasis />
+            <MetricCard label="Kategori" value={getCategory(totalToday)} emphasis />
 
-                    <div className="mt-4 flex flex-wrap gap-3">
-                      <button
-                        type="button"
-                        onClick={saveNoteForDate}
-                        className="rounded-2xl bg-moss px-5 py-3 font-semibold text-white transition hover:brightness-95"
-                      >
-                        Simpan catatan
-                      </button>
-                      <button
-                        type="button"
-                        onClick={resetSelectedDate}
-                        className="rounded-2xl border border-[#E2D7C8] bg-white px-5 py-3 font-semibold text-bark transition hover:bg-[#F4EEE4]"
-                      >
-                        Reset data tanggal ini
-                      </button>
-                    </div>
-                  </div>
+            <Button
+              onClick={addKick}
+              className="h-14 w-full rounded-2xl bg-emerald-800 text-lg text-white hover:bg-emerald-900"
+            >
+              <Baby className="mr-2 h-5 w-5" />
+              Bayi Bergerak
+            </Button>
+
+            <div className="space-y-3 rounded-2xl bg-white p-4 shadow-sm ring-1 ring-stone-200">
+              <div>
+                <div className="text-sm text-stone-500">Catatan keluhan harian</div>
+                <div className="mt-1 text-sm text-stone-600">
+                  Tulis keluhan, perubahan pola gerakan, atau hal yang ingin disampaikan saat
+                  konsultasi.
                 </div>
               </div>
+
+              <Textarea
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                placeholder="Contoh: hari ini gerakan terasa lebih aktif setelah makan malam, perut bawah terasa lebih kencang, kaki agak bengkak, atau catatan lain untuk tenaga kesehatan."
+                className="min-h-[140px] rounded-2xl border-stone-300"
+              />
+
+              <Button onClick={saveNote} variant="outline" className="rounded-2xl border-stone-300">
+                Simpan Catatan Harian
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="rounded-3xl border-stone-200 shadow-sm">
+          <CardHeader>
+            <CardTitle className="text-xl">History harian</CardTitle>
+            <CardDescription>Lihat total gerakan dan ringkasan tiap tanggal.</CardDescription>
+          </CardHeader>
+
+          <CardContent className="space-y-3">
+            {sortedDates.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-stone-300 p-6 text-center text-stone-500">
+                Belum ada history tersimpan.
+              </div>
+            ) : (
+              sortedDates.slice(0, 14).map((day) => {
+                const kicks = activeData.kicksByDate?.[day] || [];
+                const dayNote = activeData.notesByDate?.[day] || "";
+
+                return (
+                  <div key={day} className="rounded-2xl border border-stone-200 p-4">
+                    <div className="mb-1 text-sm text-stone-500">{formatDateShort(day)}</div>
+                    <div className="font-semibold">{kicks.length} gerakan</div>
+                    <div className="text-sm text-stone-600">
+                      Rata-rata 10 gerakan: {formatMinutes(getAverageTimeToTen(kicks))}
+                    </div>
+                    <div className="text-sm text-stone-600">
+                      Jendela aktif: {getMostActiveWindow(kicks)}
+                    </div>
+
+                    {dayNote ? (
+                      <div className="mt-3 rounded-xl bg-stone-50 p-3 text-sm leading-6 text-stone-700 ring-1 ring-stone-200">
+                        <span className="font-medium">Keluhan harian:</span> {dayNote}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })
             )}
-          </div>
-        </section>
+          </CardContent>
+        </Card>
       </div>
-    </main>
+    </div>
   );
 }
 
-function SummaryCard({
-  label,
-  value,
-  compact = false,
-}: {
-  label: string;
-  value: string;
-  compact?: boolean;
-}) {
+function MetricCard({ label, value, emphasis = false }) {
   return (
-    <div className="rounded-[24px] border border-[#E7DCCD] bg-white px-4 py-4 shadow-sm">
-      <div className="text-sm text-bark/65">{label}</div>
-      <div className={compact ? "mt-2 text-sm font-medium text-bark" : "mt-2 text-xl font-semibold text-bark"}>
+    <div className="rounded-2xl bg-white p-4 shadow-sm ring-1 ring-stone-200">
+      <div className="text-sm text-stone-500">{label}</div>
+      <div
+        className={
+          emphasis
+            ? "mt-1 text-2xl font-bold text-stone-800"
+            : "mt-1 text-lg font-semibold text-stone-800"
+        }
+      >
         {value}
       </div>
-    </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  icon,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 rounded-2xl px-4 py-3 text-sm font-medium transition ${
-        active ? "bg-moss text-white" : "bg-[#F4EEE4] text-bark hover:bg-[#ECE1D0]"
-      }`}
-    >
-      {icon}
-      {label}
-    </button>
-  );
-}
-
-function MiniInfo({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-[#E8DDCE] bg-[#FFFDFC] px-4 py-4">
-      <div className="text-sm text-bark/65">{label}</div>
-      <div className="mt-2 text-lg font-semibold text-bark">{value}</div>
-    </div>
-  );
-}
-
-function EmptyState({ text }: { text: string }) {
-  return (
-    <div className="mt-5 rounded-[24px] border border-dashed border-[#DCCFBC] bg-[#FFFDFC] px-4 py-8 text-center text-sm text-bark/65">
-      {text}
     </div>
   );
 }
